@@ -10,6 +10,7 @@ import qualified LLVM.AST.Constant as C
 import qualified LLVM.AST.Float as F
 import qualified LLVM.AST.FloatingPointPredicate as FP
 
+import qualified Data.ByteString as BS
 import Data.Word
 import Data.Int
 import Control.Monad.Except
@@ -20,7 +21,10 @@ import Codegen
 import qualified Syntax as S
 
 toSig :: [String] -> [(AST.Type, AST.Name)]
-toSig = map (\x -> (double, AST.Name x))
+toSig = map (\x -> (double, AST.mkName x))
+
+toType :: [S.Expr] -> [AST.Type]
+toType = map (\x -> double)
 
 codegenTop :: S.Expr -> LLVM ()
 codegenTop (S.Function name args body) = do
@@ -32,8 +36,9 @@ codegenTop (S.Function name args body) = do
       setBlock entry
       forM args $ \a -> do
         var <- alloca double
-        store var (local (AST.Name a))
+        store var (local (AST.mkName a))
         assign a var
+        --assign a (local (AST.mkName a))
       cgen body >>= ret
 
 codegenTop (S.Extern name args) = do
@@ -65,6 +70,7 @@ binops = Map.fromList [
     , ("<", lt)
   ]
 
+
 cgen :: S.Expr -> Codegen AST.Operand
 cgen (S.UnaryOp op a) = do
   cgen $ S.Call ("unary" ++ op) [a]
@@ -84,7 +90,7 @@ cgen (S.Var x) = getvar x >>= load
 cgen (S.Float n) = return $ cons $ C.Float (F.Double n)
 cgen (S.Call fn args) = do
   largs <- mapM cgen args
-  call (externf (AST.Name fn)) largs
+  call (global (AST.mkName fn) (toType args)) largs
 
 -------------------------------------------------------------------------------
 -- Compilation
@@ -93,11 +99,13 @@ cgen (S.Call fn args) = do
 liftError :: ExceptT String IO a -> IO a
 liftError = runExceptT >=> either fail return
 
+-- So withContext allows using the state Context which allows multithreaded compiling
+-- withModuleFromAST extracts particular modules from the context 
 codegen :: AST.Module -> [S.Expr] -> IO AST.Module
 codegen mod fns = withContext $ \context ->
-  liftError $ withModuleFromAST context newast $ \m -> do
+  withModuleFromAST context newast $ \m -> do
     llstr <- moduleLLVMAssembly m
-    putStrLn llstr
+    BS.putStrLn llstr
     return newast
   where
     modn    = mapM codegenTop fns

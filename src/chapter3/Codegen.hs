@@ -14,6 +14,7 @@ import Control.Applicative
 
 import LLVM.AST
 import LLVM.AST.Global
+import LLVM.AST.AddrSpace
 import qualified LLVM.AST as AST
 
 import qualified LLVM.AST.Linkage as L
@@ -33,7 +34,7 @@ runLLVM :: AST.Module -> LLVM a -> AST.Module
 runLLVM mod (LLVM m) = execState m mod
 
 emptyModule :: String -> AST.Module
-emptyModule label = defaultModule { moduleName = label }
+emptyModule label = defaultModule { moduleName = "something"}
 
 addDefn :: Definition -> LLVM ()
 addDefn d = do
@@ -43,7 +44,7 @@ addDefn d = do
 define ::  Type -> String -> [(Type, Name)] -> [BasicBlock] -> LLVM ()
 define retty label argtys body = addDefn $
   GlobalDefinition $ functionDefaults {
-    name        = Name label
+    name        = mkName label
   , parameters  = ([Parameter ty nm [] | (ty, nm) <- argtys], False)
   , returnType  = retty
   , basicBlocks = body
@@ -52,7 +53,7 @@ define retty label argtys body = addDefn $
 external ::  Type -> String -> [(Type, Name)] -> LLVM ()
 external retty label argtys = addDefn $
   GlobalDefinition $ functionDefaults {
-    name        = Name label
+    name        = mkName label
   , linkage     = L.External
   , parameters  = ([Parameter ty nm [] | (ty, nm) <- argtys], False)
   , returnType  = retty
@@ -65,7 +66,13 @@ external retty label argtys = addDefn $
 
 -- IEEE 754 double
 double :: Type
-double = FloatingPointType 64 IEEE
+double = FloatingPointType DoubleFP
+
+intt :: Type
+intt = VoidType
+
+funcptr :: [Type] -> Type
+funcptr argsType = PointerType ( FunctionType  double argsType False ) (AddrSpace 0)   
 
 -------------------------------------------------------------------------------
 -- Names
@@ -128,7 +135,7 @@ emptyBlock :: Int -> BlockState
 emptyBlock i = BlockState i [] Nothing
 
 emptyCodegen :: CodegenState
-emptyCodegen = CodegenState (Name entryBlockName) Map.empty [] 1 0 Map.empty
+emptyCodegen = CodegenState (mkName entryBlockName) Map.empty [] 1 0 Map.empty
 
 execCodegen :: Codegen a -> CodegenState
 execCodegen m = execState (runCodegen m) emptyCodegen
@@ -147,6 +154,12 @@ instr ins = do
   let i = stack blk
   modifyBlock (blk { stack = (ref := ins) : i } )
   return $ local ref
+
+instr_do ins = do
+  blk <- current
+  let i = stack blk
+  modifyBlock (blk { stack = ins : i })
+  return ()
 
 terminator :: Named Terminator -> Codegen (Named Terminator)
 terminator trm = do
@@ -170,11 +183,11 @@ addBlock bname = do
   let new = emptyBlock ix
       (qname, supply) = uniqueName bname nms
 
-  modify $ \s -> s { blocks = Map.insert (Name qname) new bls
+  modify $ \s -> s { blocks = Map.insert (mkName qname) new bls
                    , blockCount = ix + 1
                    , names = supply
                    }
-  return (Name qname)
+  return (mkName qname)
 
 setBlock :: Name -> Codegen Name
 setBlock bname = do
@@ -219,24 +232,28 @@ getvar var = do
 local ::  Name -> Operand
 local = LocalReference double
 
-global ::  Name -> C.Constant
-global = C.GlobalReference double
+global ::  Name -> [Type] -> Operand
+--global = C.GlobalReference double
 
-externf :: Name -> Operand
-externf = ConstantOperand . C.GlobalReference double
+global name argsType = ConstantOperand ( C.GlobalReference (funcptr argsType)  name)
+
+--externf :: Name -> Operand
+--externf = ConstantOperand . C.GlobalReference double
+
+--externf = ConstantOperand . C.GlobalReference funcptr
 
 -- Arithmetic and Constants
 fadd :: Operand -> Operand -> Codegen Operand
-fadd a b = instr $ FAdd NoFastMathFlags a b []
+fadd a b = instr $ FAdd noFastMathFlags a b []
 
 fsub :: Operand -> Operand -> Codegen Operand
-fsub a b = instr $ FSub NoFastMathFlags a b []
+fsub a b = instr $ FSub noFastMathFlags a b []
 
 fmul :: Operand -> Operand -> Codegen Operand
-fmul a b = instr $ FMul NoFastMathFlags a b []
+fmul a b = instr $ FMul noFastMathFlags a b []
 
 fdiv :: Operand -> Operand -> Codegen Operand
-fdiv a b = instr $ FDiv NoFastMathFlags a b []
+fdiv a b = instr $ FDiv noFastMathFlags a b []
 
 fcmp :: FP.FloatingPointPredicate -> Operand -> Operand -> Codegen Operand
 fcmp cond a b = instr $ FCmp cond a b []
@@ -257,8 +274,8 @@ call fn args = instr $ Call Nothing CC.C [] (Right fn) (toArgs args) [] []
 alloca :: Type -> Codegen Operand
 alloca ty = instr $ Alloca ty Nothing 0 []
 
-store :: Operand -> Operand -> Codegen Operand
-store ptr val = instr $ Store False ptr val Nothing 0 []
+store :: Operand -> Operand -> Codegen ()
+store ptr val = instr_do $ Do $ Store False ptr val Nothing 0 []
 
 load :: Operand -> Codegen Operand
 load ptr = instr $ Load False ptr Nothing 0 []
